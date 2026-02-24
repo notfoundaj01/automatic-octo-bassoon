@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+
+import os
+import sys
+import json
+import hashlib
+import hmac
+from pathlib import Path
+
+BASELINE_FILE = os.path.expanduser("~/.log_integrity_baseline.json")
+HMAC_KEY = os.environ.get("LOG_INTEGRITY_KEY", "change_this_key").encode()
+
+
+def compute_sha256(file_path):
+    sha256 = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for block in iter(lambda: f.read(4096), b""):
+            sha256.update(block)
+    return sha256.hexdigest()
+
+
+def collect_files(path):
+    p = Path(path)
+    if not p.exists():
+        print("Error: Path does not exist.")
+        sys.exit(1)
+
+    if p.is_file():
+        return [str(p.resolve())]
+    return [str(f.resolve()) for f in p.rglob("*") if f.is_file()]
+
+
+def generate_hmac(data_bytes):
+    return hmac.new(HMAC_KEY, data_bytes, hashlib.sha256).hexdigest()
+
+
+def load_baseline():
+    if not os.path.exists(BASELINE_FILE):
+        return {}
+
+    with open(BASELINE_FILE, "r") as f:
+        wrapper = json.load(f)
+
+    data_bytes = json.dumps(wrapper["data"], sort_keys=True).encode()
+    expected_sig = generate_hmac(data_bytes)
+
+    if not hmac.compare_digest(expected_sig, wrapper["signature"]):
+        print("WARNING: Baseline integrity compromised!")
+        sys.exit(1)
+
+    return wrapper["data"]
+
+
+def save_baseline(data):
+    data_bytes = json.dumps(data, sort_keys=True).encode()
+    signature = generate_hmac(data_bytes)
+
+    wrapper = {
+        "signature": signature,
+        "data": data
+    }
+
+    with open(BASELINE_FILE, "w") as f:
+        json.dump(wrapper, f, indent=4)
+
+    os.chmod(BASELINE_FILE, 0o600)
+
+
+def init_command(path):
+    files = collect_files(path)
+    hashes = {f: compute_sha256(f) for f in files}
+    save_baseline(hashes)
+    print("Hashes stored successfully.")
+
+
+def check_command(path):
+    baseline = load_baseline()
+    files = collect_files(path)
+
+    modified = []
+    unmodified = []
+    new_files = []
+
+    for f in files:
+        current_hash = compute_sha256(f)
+
+        if f not in baseline:
+            new_files.append(f)
+        elif baseline[f] != current_hash:
+            modified.append(f)
+        else:
+            unmodified.append(f)
+
+    if len(files) == 1:
+        f = files[0]
+        if f in modified:
+            print("Status: Modified (Hash mismatch)")
+        elif f in unmodified:
+            print("Status: Unmodified")
+        elif f in new_files:
+            print("Status: File not previously tracked")
+        return
+
+    if modified:
+        print("Modified files:")
+        for f in modified:
+            print(f" - {f}")
+
+    if new_files:
+        print("New files detected:")
+        for f in new_files:
+            print(f" - {f}")
+
+    if not modified and not new_files:
+        print("All files unmodified.")
+
+
+def update_command(path):
+    baseline = load_baseline()
+    files = collect_files(path)
+
+    for f in files:
+        baseline[f] = compute_sha256(f)
+
+    save_baseline(baseline)
+    print("Hash updated successfully.")
+
+
+def main():
+    if len(sys.argv) != 3:
+        print("Usage:")
+        print("  integrity-check init <path>")
+        print("  integrity-check check <path>")
+        print("  integrity-check -check <path>")
+        print("  integrity-check update <path>")
+        sys.exit(1)
+
+    command = sys.argv[1].lstrip("-")
+    path = sys.argv[2]
+
+    if command == "init":
+        init_command(path)
+    elif command == "check":
+        check_command(path)
+    elif command == "update":
+        update_command(path)
+    else:
+        print("Invalid command.")
+
+
+if __name__ == "__main__":
+    main()
