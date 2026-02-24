@@ -11,6 +11,11 @@ A lightweight log file integrity monitoring tool using SHA-256 hashing and HMAC 
 - Manual re-initialization
 - No external dependencies
 
+
+
+https://roadmap.sh/projects/file-integrity-checker
+
+
 ## Installation
 
 ```bash
